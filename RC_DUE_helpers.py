@@ -130,28 +130,28 @@ def calcula_arc_agg_matrix(path_list, n_t):
 	edge_list = path_list.flatten()
 	edge_list = edge_list[edge_list.nonzero()]
 	# Forma vieja
-	arc_agg_ids = np.eye(n_arcs)[:,edge_list-1]
-	bands = []
-	for idxs in arc_agg_ids:
-		bands.append(sparse.hstack([sparse.eye(n_t) if idx else sparse.csr_matrix((n_t,n_t)) for idx in idxs]))
-	arc_agg_matrix = sparse.vstack(bands)
+	# arc_agg_ids = np.eye(n_arcs)[:,edge_list-1]
+	# bands = []
+	# for idxs in arc_agg_ids:
+	# 	bands.append(sparse.hstack([sparse.eye(n_t) if idx else sparse.csr_matrix((n_t,n_t)) for idx in idxs]))
+	# arc_agg_matrix = sparse.vstack(bands)
 	# forma mejor?
-	# arc_indices = edge_list - 1  # shape: (n_arc_path,)
-	# rows = []
-	# cols = []
-	# for arc_idx, edge_idx in enumerate(arc_indices):
-	# 	# Each arc-path block contributes n_t rows (arc edge_idx) and n_t cols (arc_path arc_idx)
-	# 	r = np.arange(edge_idx * n_t, (edge_idx + 1) * n_t)
-	# 	c = np.arange(arc_idx * n_t, (arc_idx + 1) * n_t)
-	# 	rows.append(r)
-	# 	cols.append(c)
-	# rows = np.concatenate(rows)
-	# cols = np.concatenate(cols)
-	# data = np.ones(len(rows))
-	# arc_agg_matrix = sparse.csr_matrix(
-	# 	(data, (rows, cols)),
-	# 	shape=(n_arcs * n_t, n_arc_path * n_t)
-	# )
+	arc_indices = edge_list - 1  # shape: (n_arc_path,)
+	rows = []
+	cols = []
+	for arc_idx, edge_idx in enumerate(arc_indices):
+		# Each arc-path block contributes n_t rows (arc edge_idx) and n_t cols (arc_path arc_idx)
+		r = np.arange(edge_idx * n_t, (edge_idx + 1) * n_t)
+		c = np.arange(arc_idx * n_t, (arc_idx + 1) * n_t)
+		rows.append(r)
+		cols.append(c)
+	rows = np.concatenate(rows)
+	cols = np.concatenate(cols)
+	data = np.ones(len(rows))
+	arc_agg_matrix = sparse.csr_matrix(
+		(data, (rows, cols)),
+		shape=(n_arcs * n_t, n_arc_path * n_t)
+	)
 	return arc_agg_matrix
 
 
@@ -229,7 +229,7 @@ def calcula_D_arc_path(path_list, D):
 		D_arc_path_out_list.append(cur_D_out_sparse)
 	D_arc_path_in_sparse  = sparse.block_diag(D_arc_path_in_list)
 	D_arc_path_out_sparse = sparse.block_diag(D_arc_path_out_list)
-	return sparse.vstack([D_arc_path_in_sparse, D_arc_path_out_sparse])
+	return sparse.vstack([D_arc_path_in_sparse, D_arc_path_out_sparse]).tocsr()
 
 
 def calcula_D(taus):
@@ -281,7 +281,7 @@ def calcula_D(taus):
 		d = ((1 - alpha)[:, None] * phi_matrix[t_0c] +
 			 alpha[:, None] * phi_matrix[t_0c + 1])
 		d[~valid] = 0.0
-		D[edge] = sparse.csc_matrix(d).T.tocsr()
+		D[edge] = sparse.csc_matrix(d).tocsr()
 	# D_T = [d.T.tocsr() for d in D]
 	return D
 
@@ -413,6 +413,8 @@ def A_delay(h, arc_delay, path_list, cap, fft, combined_left):
 	taus = np.tile(np.arange(n_t),(n_arcs,1)) + arc_delay
 	D = calcula_D(taus)
 	D_arc_path_sparse = calcula_D_arc_path(path_list, D)
+	#print("D_arc_path indices dtype:", D_arc_path_sparse.indices.dtype)
+	D_arc_path_sparse = to_int32(D_arc_path_sparse)
 	af_matrix = calcula_af_matrix(D_arc_path_sparse, combined_left) #trapezoid_integration, path_list, n_t, arc_agg_matrix, AR_flow_matrix)
 	# calcular flujos por arco a partir de los flujos por ruta y los delays por arco
 	x_next = arc_flows_matrix(h, af_matrix)
@@ -485,3 +487,9 @@ def calcula_A_c_old(path_list, taus):
 					tau = int(np.min(taus[edge])+tau)
 			A[p,t] = tau - t
 	return A
+
+def to_int32(m):
+	m = m.tocsr()
+	m.indices = m.indices.astype(np.int32, copy=False)
+	m.indptr = m.indptr.astype(np.int32, copy=False)
+	return m

@@ -12,7 +12,7 @@ def main():
 
 	main_time = time.time()
 	parser = argparse.ArgumentParser(description="Run RC-DUE.")
-	parser.add_argument("network_name", choices=["Braess", "Nguyen"], help="Name of the network ('Braess', 'Nguyen')")
+	parser.add_argument("network_name", choices=["Braess", "Nguyen", "Sioux"], help="Name of the network ('Braess', 'Nguyen')")
 	args = parser.parse_args()
 	
 	# Nombre de la red
@@ -59,9 +59,6 @@ def main():
 	n_arcs = arc_delay_0.shape[0]
 	edges = edges_data[:,:2]
 
-	taus_old = np.tile(np.arange(n_t),(n_arcs,1)) + arc_delay_paper
-	c_old = calcula_A_c_old(path_list, taus_old)
-
 	mask = (path_list == 0)
 	last_cols = mask.argmax(axis=1)-1
 	last_elements = path_list[np.arange(path_list.shape[0]), last_cols]
@@ -73,7 +70,8 @@ def main():
 	#B = np.array([[1,1,0,0,0,0,0,0],[0,0,1,0,0,0,0,0],[0,0,0,1,1,1,0,0],[0,0,0,0,0,0,1,1]])
 	B = np.array(B_raw)
 	P_full = np.eye( B.shape[1] )-B.T@np.linalg.inv(B@B.T)@B
-	P = sparse.bmat([[P_full[i,j]*sparse.eye(n_t) for j in range(P_full.shape[1])] for i in range(P_full.shape[0])])
+	#P = sparse.bmat([[P_full[i,j]*sparse.eye(n_t) for j in range(P_full.shape[1])] for i in range(P_full.shape[0])])
+	P_new = sparse.kron(P_full, sparse.eye(n_t), format='csr')
 	d_full = B @ h_0
 	d0_full = np.zeros(h_0.shape)
 	#d0_full[0,:] = d_full[0,:]
@@ -99,12 +97,14 @@ def main():
 
 	trapezoid_integration = calcula_trapezoid_integration(n_t)
 	n_arc_path = np.sum(path_list != 0)
-	cum_trap_full = sparse.block_diag([trapezoid_integration.T for _ in range(n_arc_path)])
 	arc_agg_matrix = calcula_arc_agg_matrix(path_list, n_t)
+	import pdb;pdb.set_trace()
+	cum_trap_full = sparse.kron(sparse.eye(n_arc_path), trapezoid_integration.T, format='csr')
 	n_AR_flow = n_arc_path*n_t*2
 	AR_flow_matrix = sparse.hstack([sparse.eye(n_AR_flow),-sparse.eye(n_AR_flow)])
 	combined_left = arc_agg_matrix.dot(cum_trap_full).dot(AR_flow_matrix)
-	combined_left = combined_left.tocsr()  # ensure fast matmul format
+	#print("combined_left indices dtype:", combined_left.indices.dtype)
+	combined_left = to_int32(combined_left)
 
 	A = lambda h , arc_delay : A_delay(h, arc_delay, path_list, edges_capacity, edges_fft, combined_left)
 
