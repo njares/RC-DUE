@@ -124,30 +124,75 @@ def arc_flows_matrix(h, af_matrix, adjoint = False):
 		return arc_flow
 
 
-def calcula_af_matrix(D_arc_path_sparse, trapezoid_integration, path_list, n_t):
+def calcula_arc_agg_matrix(path_list, n_t):
+	n_arc_path = np.sum(path_list != 0)
+	n_arcs = np.unique(path_list.flatten()).shape[0] - 1
+	edge_list = path_list.flatten()
+	edge_list = edge_list[edge_list.nonzero()]
+	# arc_agg_ids = np.eye(n_arcs)[:,edge_list-1]
+	# bands = []
+	# for idxs in arc_agg_ids:
+	# 	bands.append(sparse.hstack([sparse.eye(n_t) if idx else sparse.csr_matrix((n_t,n_t)) for idx in idxs]))
+	# arc_agg_matrix = sparse.vstack(bands)
+	arc_indices = edge_list - 1  # shape: (n_arc_path,)
+	rows = []
+	cols = []
+	for arc_idx, edge_idx in enumerate(arc_indices):
+		# Each arc-path block contributes n_t rows (arc edge_idx) and n_t cols (arc_path arc_idx)
+		r = np.arange(edge_idx * n_t, (edge_idx + 1) * n_t)
+		c = np.arange(arc_idx * n_t, (arc_idx + 1) * n_t)
+		rows.append(r)
+		cols.append(c)
+	rows = np.concatenate(rows)
+	cols = np.concatenate(cols)
+	data = np.ones(len(rows))
+	arc_agg_matrix = sparse.csr_matrix(
+		(data, (rows, cols)),
+		shape=(n_arcs * n_t, n_arc_path * n_t)
+	)
+	return arc_agg_matrix
+
+
+def calcula_af_matrix(D_arc_path_sparse, cum_trap_full, path_list, n_t, arc_agg_matrix, AR_flow_matrix):
 	'''
 	path_list es una matriz que relaciona rutas con arcos
 	D_arc_path_sparse es una matriz rala que calcula el delay para todas las rutas y arcos
 	'''
 	n_arc_path = np.sum(path_list != 0)
 	n_arcs = np.unique(path_list.flatten()).shape[0] - 1
-	n_AR_flow = n_arc_path*n_t*2
+	# n_AR_flow = n_arc_path*n_t*2
 	# matriz de flujo neto por arco-ruta
-	AR_flow_matrix = sparse.hstack([sparse.eye(n_AR_flow),-sparse.eye(n_AR_flow)])
+	# AR_flow_matrix = sparse.hstack([sparse.eye(n_AR_flow),-sparse.eye(n_AR_flow)])
 	# matriz de integracion trapecio cumulative
 	#cum_trap_matrix = np.triu(np.ones((n_t,n_t))*90) + np.triu(np.ones((n_t,n_t))*90, k=1)
 	#cum_trap_matrix[0,:] = cum_trap_matrix[0,:] - 90
 	#cum_trap_sparse = sparse.csr_matrix(cum_trap_matrix).transpose(copy=True)
 	#cum_trap_full = sparse.block_diag([cum_trap_sparse for _ in range(n_arc_path)])
-	cum_trap_full = sparse.block_diag([trapezoid_integration.T for _ in range(n_arc_path)])
+	# cum_trap_full = sparse.block_diag([trapezoid_integration.T for _ in range(n_arc_path)])
 	# matriz de agregación en arcos de volumen por arco-ruta
-	edge_list = path_list.flatten()
-	edge_list = edge_list[edge_list.nonzero()]
-	arc_agg_ids = np.eye(n_arcs)[:,edge_list-1]
-	bands = []
-	for idxs in arc_agg_ids:
-		bands.append(sparse.hstack([sparse.eye(n_t) if idx else sparse.csr_matrix((n_t,n_t)) for idx in idxs]))
-	arc_agg_matrix = sparse.vstack(bands)
+	# edge_list = path_list.flatten()
+	# edge_list = edge_list[edge_list.nonzero()]
+	# # arc_agg_ids = np.eye(n_arcs)[:,edge_list-1]
+	# # bands = []
+	# # for idxs in arc_agg_ids:
+	# # 	bands.append(sparse.hstack([sparse.eye(n_t) if idx else sparse.csr_matrix((n_t,n_t)) for idx in idxs]))
+	# # arc_agg_matrix = sparse.vstack(bands)
+	# arc_indices = edge_list - 1  # shape: (n_arc_path,)
+	# rows = []
+	# cols = []
+	# for arc_idx, edge_idx in enumerate(arc_indices):
+	# 	# Each arc-path block contributes n_t rows (arc edge_idx) and n_t cols (arc_path arc_idx)
+	# 	r = np.arange(edge_idx * n_t, (edge_idx + 1) * n_t)
+	# 	c = np.arange(arc_idx * n_t, (arc_idx + 1) * n_t)
+	# 	rows.append(r)
+	# 	cols.append(c)
+	# rows = np.concatenate(rows)
+	# cols = np.concatenate(cols)
+	# data = np.ones(len(rows))
+	# arc_agg_matrix = sparse.csr_matrix(
+	# 	(data, (rows, cols)),
+	# 	shape=(n_arcs * n_t, n_arc_path * n_t)
+	# )
 	# multiplico todas las matrices
 	full_matrix = D_arc_path_sparse.copy()
 	full_matrix = AR_flow_matrix.dot(full_matrix)
@@ -235,31 +280,38 @@ def flow_delay(flow, tau):
 		import pdb
 		pdb.set_trace()
 	# calcular la composición con flow
-	for t in range(n_t):
-		# busco t_1 a donde tau(t_1)=t 
-		# primero busco el último t_0 tal que tau[t_0] <= t
-		t_0 = np.min(np.where(tau>t)[0])-1
-		# si me paso del primero, no hago nada
-		if t_0 >= 0:
-			# nunca me debería pasar del último
-			if t_0 == n_t-1 and tau[t_0]<t:
-				print("tau no abarca todo el horizonte temporal!")
-				sys.exit()
-			# puede ser real y no entero, busco un c tal que:
-			# c*tau[t_0]+(1-c)*tau[t_0+1] = t
-			# c*tau[t_0]+tau[t_0+1]-c*tau[t_0+1] = t
-			# c*(tau[t_0]-tau[t_0+1])+tau[t_0+1] = t
-			# c*(tau[t_0]-tau[t_0+1]) = t - tau[t_0+1]
-			# c = (t - tau[t_0+1])/(tau[t_0]-tau[t_0+1])
-			# está bien definido porque tau[t_0] != tau[t_0+1]
-			c = (t - tau[t_0+1])/(tau[t_0]-tau[t_0+1])
-			# entonces el t_0 tal que tau(t_0)=t es t_0 = t_0 + (1-c)
-			t_1 = t_0 + (1-c)
-			# ahora new_flow[t] = flow[t_1], así que tengo que calcular flow[t_1]
-			# es la misma combinación convexa
-			# c*flow[t_0]+(1-c)*flow[t_0+1]
-			# no debería haber out_of_bounds porque tau y flow tienen el mismo tamaño
-			new_flow[t] = c*flow[t_0] + (1-c)*flow[t_0+1]
+	# for t in range(n_t):
+	# 	# busco t_1 a donde tau(t_1)=t 
+	# 	# primero busco el último t_0 tal que tau[t_0] <= t
+	# 	t_0 = np.min(np.where(tau>t)[0])-1
+	# 	# si me paso del primero, no hago nada
+	# 	if t_0 >= 0:
+	# 		# nunca me debería pasar del último
+	# 		if t_0 == n_t-1 and tau[t_0]<t:
+	# 			print("tau no abarca todo el horizonte temporal!")
+	# 			sys.exit()
+	# 		# puede ser real y no entero, busco un c tal que:
+	# 		# c*tau[t_0]+(1-c)*tau[t_0+1] = t
+	# 		# c*tau[t_0]+tau[t_0+1]-c*tau[t_0+1] = t
+	# 		# c*(tau[t_0]-tau[t_0+1])+tau[t_0+1] = t
+	# 		# c*(tau[t_0]-tau[t_0+1]) = t - tau[t_0+1]
+	# 		# c = (t - tau[t_0+1])/(tau[t_0]-tau[t_0+1])
+	# 		# está bien definido porque tau[t_0] != tau[t_0+1]
+	# 		c = (t - tau[t_0+1])/(tau[t_0]-tau[t_0+1])
+	# 		# entonces el t_0 tal que tau(t_0)=t es t_0 = t_0 + (1-c)
+	# 		t_1 = t_0 + (1-c)
+	# 		# ahora new_flow[t] = flow[t_1], así que tengo que calcular flow[t_1]
+	# 		# es la misma combinación convexa
+	# 		# c*flow[t_0]+(1-c)*flow[t_0+1]
+	# 		# no debería haber out_of_bounds porque tau y flow tienen el mismo tamaño
+	# 		new_flow[t] = c*flow[t_0] + (1-c)*flow[t_0+1]
+	t_values = np.arange(n_t)
+	if tau[-1] < n_t -1:
+		print("tau no abarca todo el horizonte temporal!")
+		sys.exit()
+	t_0_array = np.searchsorted(tau, t_values, side='right') - 1
+	valid_mask = t_0_array >= 0
+	new_flow[valid_mask] = np.interp(t_values[valid_mask], tau, flow)
 	return new_flow
 
 def calcula_arc_delay(x, cap, fft):
@@ -310,14 +362,14 @@ def calcula_A_c(path_list, taus):
 			A[p,t] = tau - t
 	return A
 
-def A_delay(h, arc_delay, trapezoid_integration, path_list, cap, fft):
+def A_delay(h, arc_delay, trapezoid_integration, path_list, cap, fft, arc_agg_matrix, AR_flow_matrix):
 	n_t = h.shape[1]
 	n_arcs = arc_delay.shape[0]
 	# calcular matriz de flujo por arco a partir de los delays por arco
 	taus = np.tile(np.arange(n_t),(n_arcs,1)) + arc_delay
 	D = calcula_D(taus)
 	D_arc_path_sparse = calcula_D_arc_path(path_list, D)
-	af_matrix = calcula_af_matrix(D_arc_path_sparse, trapezoid_integration, path_list, n_t)
+	af_matrix = calcula_af_matrix(D_arc_path_sparse, trapezoid_integration, path_list, n_t, arc_agg_matrix, AR_flow_matrix)
 	# calcular flujos por arco a partir de los flujos por ruta y los delays por arco
 	x_next = arc_flows_matrix(h, af_matrix)
 	# calcular delays por arco a partir de los nuevos flujos por arco

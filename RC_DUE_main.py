@@ -1,10 +1,16 @@
 import os
 import argparse
+import time
+import cProfile
 
 from RC_DUE_helpers import *
 
 
 def main():
+	profiler = cProfile.Profile()
+	profiler.enable()
+
+	main_time = time.time()
 	parser = argparse.ArgumentParser(description="Run RC-DUE.")
 	parser.add_argument("network_name", choices=["Braess", "Nguyen"], help="Name of the network ('Braess', 'Nguyen')")
 	args = parser.parse_args()
@@ -92,34 +98,45 @@ def main():
 		return h_proy_flat.reshape(-1, n_t)
 
 	trapezoid_integration = calcula_trapezoid_integration(n_t)
+	n_arc_path = np.sum(path_list != 0)
+	cum_trap_full = sparse.block_diag([trapezoid_integration.T for _ in range(n_arc_path)])
+	arc_agg_matrix = calcula_arc_agg_matrix(path_list, n_t)
+	n_AR_flow = n_arc_path*n_t*2
+	AR_flow_matrix = sparse.hstack([sparse.eye(n_AR_flow),-sparse.eye(n_AR_flow)])
 
-	A = lambda h , arc_delay : A_delay(h, arc_delay, trapezoid_integration, path_list, edges_capacity, edges_fft)
+	A = lambda h , arc_delay : A_delay(h, arc_delay, cum_trap_full, path_list, edges_capacity, edges_fft, arc_agg_matrix, AR_flow_matrix)
 
 	for t in range(1,n_t):
 		arc_delay_paper[:,t] = np.maximum(arc_delay_paper[:,t-1]-.99, arc_delay_paper[:,t])
 
 	# calcular equilibrio
 	#h_next, arc_delay_next, status = rc_due(h_0, arc_delay_0, P_lambda, A, epsilon = 1e-5)
+	rc_due_time = time.time()
 	h_next, arc_delay_next, status = rc_due(h_0, arc_delay_paper, P_lambda, A, epsilon = 1e-5)
+	rc_due_time = time.time() - rc_due_time
 	print(status)
 
 	# calcular flujos por arco finales
 	taus = np.tile(np.arange(n_t),(n_arcs,1)) + arc_delay_next
 	D = calcula_D(taus)
 	D_arc_path_sparse = calcula_D_arc_path(path_list, D)
-	af_matrix = calcula_af_matrix(D_arc_path_sparse, trapezoid_integration, path_list, n_t)
+	af_matrix = calcula_af_matrix(D_arc_path_sparse, cum_trap_full, path_list, n_t, arc_agg_matrix, AR_flow_matrix)
 	x_final = arc_flows_matrix(h_next, af_matrix)
 
-	c_final, _ = A_delay(h_next, arc_delay_next, trapezoid_integration, path_list, edges_capacity, edges_fft)
+	c_final, _ = A_delay(h_next, arc_delay_next, cum_trap_full, path_list, edges_capacity, edges_fft, arc_agg_matrix, AR_flow_matrix)
 
 	# guardar costo final
-	np.savetxt("route_traversal_time_RC_DUE.csv", c_final, delimiter = ",")
-	np.savetxt("traversal_time_RC_DUE.csv", arc_delay_next, delimiter = ",")
-	np.savetxt("flows_RC_DUE.csv", h_next, delimiter = ",")
-	np.savetxt("edge_flows_RC_DUE.csv", x_final, delimiter = ",")
+	np.savetxt(network_name+"/route_traversal_time_RC_DUE.csv", c_final, delimiter = ",")
+	np.savetxt(network_name+"/traversal_time_RC_DUE.csv", arc_delay_next, delimiter = ",")
+	np.savetxt(network_name+"/flows_RC_DUE.csv", h_next, delimiter = ",")
+	np.savetxt(network_name+"/edge_flows_RC_DUE.csv", x_final, delimiter = ",")
 
-	# graficar cosas
-	# plot_final(h_next, h_0, x_0, x_final, c_final, c_old)
+	main_time = time.time() - main_time
+	print(f"RC DUE elapsed time: {rc_due_time:.4f} seconds")
+	print(f"Total elapsed time: {main_time:.4f} seconds")
+
+	profiler.disable()
+	profiler.dump_stats("profile.prof")
 
 
 if __name__ == "__main__":
