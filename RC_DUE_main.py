@@ -7,8 +7,8 @@ from RC_DUE_helpers import *
 
 
 def main():
-	profiler = cProfile.Profile()
-	profiler.enable()
+	# profiler = cProfile.Profile()
+	# profiler.enable()
 
 	main_time = time.time()
 	parser = argparse.ArgumentParser(description="Run RC-DUE.")
@@ -103,8 +103,10 @@ def main():
 	arc_agg_matrix = calcula_arc_agg_matrix(path_list, n_t)
 	n_AR_flow = n_arc_path*n_t*2
 	AR_flow_matrix = sparse.hstack([sparse.eye(n_AR_flow),-sparse.eye(n_AR_flow)])
+	combined_left = arc_agg_matrix.dot(cum_trap_full).dot(AR_flow_matrix)
+	combined_left = combined_left.tocsr()  # ensure fast matmul format
 
-	A = lambda h , arc_delay : A_delay(h, arc_delay, cum_trap_full, path_list, edges_capacity, edges_fft, arc_agg_matrix, AR_flow_matrix)
+	A = lambda h , arc_delay : A_delay(h, arc_delay, path_list, edges_capacity, edges_fft, combined_left)
 
 	for t in range(1,n_t):
 		arc_delay_paper[:,t] = np.maximum(arc_delay_paper[:,t-1]-.99, arc_delay_paper[:,t])
@@ -120,10 +122,10 @@ def main():
 	taus = np.tile(np.arange(n_t),(n_arcs,1)) + arc_delay_next
 	D = calcula_D(taus)
 	D_arc_path_sparse = calcula_D_arc_path(path_list, D)
-	af_matrix = calcula_af_matrix(D_arc_path_sparse, cum_trap_full, path_list, n_t, arc_agg_matrix, AR_flow_matrix)
+	af_matrix = calcula_af_matrix(D_arc_path_sparse, combined_left) # cum_trap_full, path_list, n_t, arc_agg_matrix, AR_flow_matrix)
 	x_final = arc_flows_matrix(h_next, af_matrix)
 
-	c_final, _ = A_delay(h_next, arc_delay_next, cum_trap_full, path_list, edges_capacity, edges_fft, arc_agg_matrix, AR_flow_matrix)
+	c_final, _ = A_delay(h_next, arc_delay_next, path_list, edges_capacity, edges_fft, combined_left)
 
 	# guardar costo final
 	np.savetxt(network_name+"/route_traversal_time_RC_DUE.csv", c_final, delimiter = ",")
@@ -135,8 +137,8 @@ def main():
 	print(f"RC DUE elapsed time: {rc_due_time:.4f} seconds")
 	print(f"Total elapsed time: {main_time:.4f} seconds")
 
-	profiler.disable()
-	profiler.dump_stats("profile.prof")
+	# profiler.disable()
+	# profiler.dump_stats("profile.prof")
 
 
 if __name__ == "__main__":
