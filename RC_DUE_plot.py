@@ -6,7 +6,7 @@ from RC_DUE_helpers import *
 
 def main():
 	parser = argparse.ArgumentParser(description="Plot RC-DUE results.")
-	parser.add_argument("network_name", choices=["Braess", "Nguyen"], help="Name of the network ('Braess', 'Nguyen')")
+	parser.add_argument("network_name", choices=["Braess", "Nguyen", "Sioux"], help="Name of the network ('Braess', 'Nguyen')")
 	args = parser.parse_args()
 	
 	# Nombre de la red
@@ -67,7 +67,8 @@ def main():
 	#B = np.array([[1,1,0,0,0,0,0,0],[0,0,1,0,0,0,0,0],[0,0,0,1,1,1,0,0],[0,0,0,0,0,0,1,1]])
 	B = np.array(B_raw)
 	P_full = np.eye( B.shape[1] )-B.T@np.linalg.inv(B@B.T)@B
-	P = sparse.bmat([[P_full[i,j]*sparse.eye(n_t) for j in range(P_full.shape[1])] for i in range(P_full.shape[0])])
+	#P = sparse.bmat([[P_full[i,j]*sparse.eye(n_t) for j in range(P_full.shape[1])] for i in range(P_full.shape[0])])
+	P = sparse.kron(P_full, sparse.eye(n_t), format='csr')
 	d_full = B @ h_0
 	d0_full = np.zeros(h_0.shape)
 	#d0_full[0,:] = d_full[0,:]
@@ -92,8 +93,10 @@ def main():
 		return h_proy_flat.reshape(-1, n_t)
 
 	trapezoid_integration = calcula_trapezoid_integration(n_t)
+	n_arc_path = np.sum(path_list != 0)
+	arc_agg_matrix = calcula_arc_agg_matrix(path_list, n_t)
 
-	A = lambda h , arc_delay : A_delay(h, arc_delay, trapezoid_integration, path_list, edges_capacity, edges_fft)
+	A = lambda h , arc_delay : A_delay(h, arc_delay, path_list, edges_capacity, edges_fft, trapezoid_integration, arc_agg_matrix)
 
 	for t in range(1,n_t):
 		arc_delay_paper[:,t] = np.maximum(arc_delay_paper[:,t-1]-.99, arc_delay_paper[:,t])
@@ -116,11 +119,11 @@ def main():
 	# calcular flujos por arco finales
 	taus = np.tile(np.arange(n_t),(n_arcs,1)) + arc_delay_next
 	D = calcula_D(taus)
-	D_arc_path_sparse = calcula_D_arc_path(path_list, D)
-	af_matrix = calcula_af_matrix(D_arc_path_sparse, trapezoid_integration, path_list, n_t)
+	D = calcula_D(taus)
+	af_matrix = make_af_operator(path_list, trapezoid_integration, arc_agg_matrix, D, n_arc_path, n_t, n_arcs)
 	x_final = arc_flows_matrix(h_next, af_matrix)
 
-	c_final, _ = A_delay(h_next, arc_delay_next, trapezoid_integration, path_list, edges_capacity, edges_fft)
+	c_final, _ = A_delay(h_next, arc_delay_next, path_list, edges_capacity, edges_fft, trapezoid_integration, arc_agg_matrix)
 
 	# graficar cosas
 	plot_final(h_next, h_0, x_0, x_final, c_final, c_old)

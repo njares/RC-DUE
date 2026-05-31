@@ -12,7 +12,7 @@ def main():
 
 	main_time = time.time()
 	parser = argparse.ArgumentParser(description="Run RC-DUE.")
-	parser.add_argument("network_name", choices=["Braess", "Nguyen", "Sioux"], help="Name of the network ('Braess', 'Nguyen')")
+	parser.add_argument("network_name", choices=["Braess", "Nguyen", "Sioux", "Anaheim"], help="Name of the network ('Braess', 'Nguyen', 'Sioux', 'Anaheim')")
 	args = parser.parse_args()
 	
 	# Nombre de la red
@@ -71,7 +71,7 @@ def main():
 	B = np.array(B_raw)
 	P_full = np.eye( B.shape[1] )-B.T@np.linalg.inv(B@B.T)@B
 	#P = sparse.bmat([[P_full[i,j]*sparse.eye(n_t) for j in range(P_full.shape[1])] for i in range(P_full.shape[0])])
-	P_new = sparse.kron(P_full, sparse.eye(n_t), format='csr')
+	P = sparse.kron(P_full, sparse.eye(n_t), format='csr')
 	d_full = B @ h_0
 	d0_full = np.zeros(h_0.shape)
 	#d0_full[0,:] = d_full[0,:]
@@ -98,22 +98,16 @@ def main():
 	trapezoid_integration = calcula_trapezoid_integration(n_t)
 	n_arc_path = np.sum(path_list != 0)
 	arc_agg_matrix = calcula_arc_agg_matrix(path_list, n_t)
-	import pdb;pdb.set_trace()
-	cum_trap_full = sparse.kron(sparse.eye(n_arc_path), trapezoid_integration.T, format='csr')
-	n_AR_flow = n_arc_path*n_t*2
-	AR_flow_matrix = sparse.hstack([sparse.eye(n_AR_flow),-sparse.eye(n_AR_flow)])
-	combined_left = arc_agg_matrix.dot(cum_trap_full).dot(AR_flow_matrix)
-	#print("combined_left indices dtype:", combined_left.indices.dtype)
-	combined_left = to_int32(combined_left)
+	#import pdb;pdb.set_trace()
 
-	A = lambda h , arc_delay : A_delay(h, arc_delay, path_list, edges_capacity, edges_fft, combined_left)
+	A = lambda h , arc_delay : A_delay(h, arc_delay, path_list, edges_capacity, edges_fft, trapezoid_integration, arc_agg_matrix)
 
 	for t in range(1,n_t):
 		arc_delay_paper[:,t] = np.maximum(arc_delay_paper[:,t-1]-.99, arc_delay_paper[:,t])
 
 	# calcular equilibrio
-	#h_next, arc_delay_next, status = rc_due(h_0, arc_delay_0, P_lambda, A, epsilon = 1e-5)
 	rc_due_time = time.time()
+	# h_next, arc_delay_next, status = rc_due(h_0, arc_delay_paper, P_lambda, A, epsilon = 6e-7)
 	h_next, arc_delay_next, status = rc_due(h_0, arc_delay_paper, P_lambda, A, epsilon = 1e-5)
 	rc_due_time = time.time() - rc_due_time
 	print(status)
@@ -121,11 +115,10 @@ def main():
 	# calcular flujos por arco finales
 	taus = np.tile(np.arange(n_t),(n_arcs,1)) + arc_delay_next
 	D = calcula_D(taus)
-	D_arc_path_sparse = calcula_D_arc_path(path_list, D)
-	af_matrix = calcula_af_matrix(D_arc_path_sparse, combined_left) # cum_trap_full, path_list, n_t, arc_agg_matrix, AR_flow_matrix)
+	af_matrix = make_af_operator(path_list, trapezoid_integration, arc_agg_matrix, D, n_arc_path, n_t, n_arcs)
 	x_final = arc_flows_matrix(h_next, af_matrix)
 
-	c_final, _ = A_delay(h_next, arc_delay_next, path_list, edges_capacity, edges_fft, combined_left)
+	c_final, _ = A_delay(h_next, arc_delay_next, path_list, edges_capacity, edges_fft, trapezoid_integration, arc_agg_matrix)
 
 	# guardar costo final
 	np.savetxt(network_name+"/route_traversal_time_RC_DUE.csv", c_final, delimiter = ",")
