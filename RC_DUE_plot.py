@@ -5,13 +5,13 @@ from RC_DUE_helpers import *
 
 
 def main():
-	parser = argparse.ArgumentParser(description="Run RC-DUE.")
+	parser = argparse.ArgumentParser(description="Plot RC-DUE results.")
 	parser.add_argument("network_name", choices=["Braess", "Nguyen"], help="Name of the network ('Braess', 'Nguyen')")
 	args = parser.parse_args()
 	
 	# Nombre de la red
 	network_name = args.network_name
-	print(f"Calculando RC-DUE para la red: {network_name}")
+	print(f"Ploting RC-DUE para la red: {network_name}")
 
 	# constantes
 	full_path = './'
@@ -100,8 +100,18 @@ def main():
 
 	# calcular equilibrio
 	#h_next, arc_delay_next, status = rc_due(h_0, arc_delay_0, P_lambda, A, epsilon = 1e-5)
-	h_next, arc_delay_next, status = rc_due(h_0, arc_delay_paper, P_lambda, A, epsilon = 1e-5)
-	print(status)
+	# h_next, arc_delay_next, status = rc_due(h_0, arc_delay_paper, P_lambda, A, epsilon = 1e-5)
+	# print(status)
+
+	# Cargo archivo h_next
+	h_next_filename = os.path.join(full_path,network_name,"flows_RC_DUE.csv")
+	with open(h_next_filename, mode='r') as h_next_file:
+		h_next = np.loadtxt(h_next_file, delimiter = ",")
+
+	# Cargo archivo arc_delay_next
+	arc_delay_next_filename = os.path.join(full_path,network_name,"traversal_time_RC_DUE.csv")
+	with open(arc_delay_next_filename, mode='r') as arc_delay_next_file:
+		arc_delay_next = np.loadtxt(arc_delay_next_file, delimiter = ",")
 
 	# calcular flujos por arco finales
 	taus = np.tile(np.arange(n_t),(n_arcs,1)) + arc_delay_next
@@ -112,14 +122,8 @@ def main():
 
 	c_final, _ = A_delay(h_next, arc_delay_next, trapezoid_integration, path_list, edges_capacity, edges_fft)
 
-	# guardar costo final
-	np.savetxt("route_traversal_time_RC_DUE.csv", c_final, delimiter = ",")
-	np.savetxt("traversal_time_RC_DUE.csv", arc_delay_next, delimiter = ",")
-	np.savetxt("flows_RC_DUE.csv", h_next, delimiter = ",")
-	np.savetxt("edge_flows_RC_DUE.csv", x_final, delimiter = ",")
-
 	# graficar cosas
-	# plot_final(h_next, h_0, x_0, x_final, c_final, c_old)
+	plot_final(h_next, h_0, x_0, x_final, c_final, c_old)
 
 
 if __name__ == "__main__":

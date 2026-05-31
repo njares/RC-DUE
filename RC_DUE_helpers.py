@@ -262,9 +262,30 @@ def flow_delay(flow, tau):
 			new_flow[t] = c*flow[t_0] + (1-c)*flow[t_0+1]
 	return new_flow
 
-def calcula_arc_delay(x):
-	# por ahora la dejamos fija, pero esta función debería depende de cada grafo
-	arc_delay = 2*(1+0.15*(x/100)**4)
+def calcula_arc_delay(x, cap, fft):
+	'''
+	x: arreglo de <# arcos> filas y <n_t> columnas
+		Cada fila tiene la cantidad de vehículos en ese arco en cada uno de los n_t instantes de tiempo
+	cap: arreglo de <# arcos> filas
+		Es la capacidad de cada arco, en veh/s
+	fft: arreglo de <# arcos> filas
+		Es el free flow time de cada arco, en [s]
+	
+	Usamos la formula 
+	arc delay = free flow time * ( 1 + B * ( flow / capacity ) ^ Power ).
+	
+	Donde el free flow time es en unidades de discretización temporal (dt = 180)
+	y la capacidad es en veh, por lo que usamos cap*fft para nuestra cap.
+	B = 0.15, Power = 4
+	'''
+	# Braess:
+	# FFT = 360 s (esto es "2" en el dataset, porque son "2" periodos de "dt=180")
+	# capacity = 0.5 veh/s
+	dt = 180
+	cap_veh = (cap*fft).reshape(-1,1)
+	FFT_dt = (fft/dt).reshape(-1,1)
+	#arc_delay = 2*(1+0.15*(x/180)**4)
+	arc_delay = FFT_dt*(1+0.15*(x/cap_veh)**4)
 	n_t = x.shape[1]
 	for t in range(1,n_t):
 		arc_delay[:,t] = np.maximum(arc_delay[:,t-1]-.99, arc_delay[:,t])
@@ -289,7 +310,7 @@ def calcula_A_c(path_list, taus):
 			A[p,t] = tau - t
 	return A
 
-def A_delay(h, arc_delay, trapezoid_integration, path_list):
+def A_delay(h, arc_delay, trapezoid_integration, path_list, cap, fft):
 	n_t = h.shape[1]
 	n_arcs = arc_delay.shape[0]
 	# calcular matriz de flujo por arco a partir de los delays por arco
@@ -300,7 +321,7 @@ def A_delay(h, arc_delay, trapezoid_integration, path_list):
 	# calcular flujos por arco a partir de los flujos por ruta y los delays por arco
 	x_next = arc_flows_matrix(h, af_matrix)
 	# calcular delays por arco a partir de los nuevos flujos por arco
-	arc_delay_next = calcula_arc_delay(x_next)
+	arc_delay_next = calcula_arc_delay(x_next, cap, fft)
 	# calcular delays por ruta a partir de los delays por arco
 	taus_next = np.tile(np.arange(n_t),(n_arcs,1)) + arc_delay_next
 	A_h = calcula_A_c(path_list, taus_next)
@@ -313,7 +334,8 @@ def plot_final(h_final, h_inicial, x_inicial, x_final, c_final, c_old):
 	row = 3
 	col = 5
 	# ploteo los flujos por ruta
-	for j in range(h_inicial.shape[0]):
+	#for j in range(h_inicial.shape[0]):
+	for j in range(11):
 		num = j+1
 		cur_ax = fig.add_subplot(row,col,num)
 		cur_ax.plot(h_inicial[j], label=f"flujo inicial en la ruta {j}")
@@ -324,7 +346,8 @@ def plot_final(h_final, h_inicial, x_inicial, x_final, c_final, c_old):
 		#cur_ax.set_ylim(-0.6, 2.0)
 		cur_ax.legend()
 	# ploteo los flujos por arco
-	for j in range(x_inicial.shape[0]):
+	#for j in range(x_inicial.shape[0]):
+	for j in range(5):
 		cur_ax = fig.add_subplot(row,col,j+11)
 		cur_ax.plot(x_inicial[j,:], label=f"flujo original en el arco {j+1}")
 		cur_ax.plot(x_final[j,:], label=f"flujo final en el arco {j+1}")
