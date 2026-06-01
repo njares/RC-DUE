@@ -20,6 +20,7 @@ import sys
 import matplotlib.pyplot as plt
 from scipy.sparse.linalg import LinearOperator
 
+from concurrent.futures import ThreadPoolExecutor
 
 def project(P,x0,max_iter=1000,tol=1e-6):
     assert len(x0.shape) == 1, "x0 must be a vector"
@@ -40,6 +41,7 @@ def project(P,x0,max_iter=1000,tol=1e-6):
             # Stop condition
             cI += np.linalg.norm(prev_y - y[i,:])**2
             n += 1
+    #print(f"converged in {n} iterations")
     return x
 
 
@@ -125,7 +127,8 @@ def arc_flows_matrix(h, af_matrix, adjoint=False):
 
 def calcula_arc_agg_matrix(path_list, n_t):
 	n_arc_path = np.sum(path_list != 0)
-	n_arcs = np.unique(path_list.flatten()).shape[0] - 1
+	#n_arcs = np.unique(path_list.flatten()).shape[0] - 1
+	n_arcs = int(path_list.max())  # max edge index (1-based), so this = actual n_arcs
 	edge_list = path_list.flatten()
 	edge_list = edge_list[edge_list.nonzero()]
 	arc_indices = edge_list - 1  # shape: (n_arc_path,)
@@ -283,34 +286,46 @@ def calcula_arc_delay(x, cap, fft):
 		arc_delay[:,t] = np.maximum(arc_delay[:,t-1]-.99, arc_delay[:,t])
 	return arc_delay
 
-def calcula_A_c(path_list, taus):
-	n_paths = path_list.shape[0]
-	n_t = taus.shape[1]
-	A = np.zeros((n_paths,n_t))
-	for p, path in enumerate(path_list):
-		edgelist = path[path != 0] - 1
-		for t in range(n_t):
-			tau = t
-			for edge in edgelist:
-				if tau < n_t-1:
-					parte_entera = int(tau)
-					mantisa = tau - parte_entera
-					tau = (1-mantisa)*taus[edge, parte_entera] + mantisa*taus[edge, parte_entera+1]
-					#tau = int(taus[edge, tau])
-				else:
-					tau = int(np.min(taus[edge])+tau)
-			A[p,t] = tau - t
-	return A
 
-def A_delay(h, arc_delay, path_list, cap, fft, trapezoid_integration, arc_agg_matrix):
+def calcula_A_c(path_list, taus):
+    n_paths, max_edges = path_list.shape
+    n_t = taus.shape[1]
+    t_values = np.arange(n_t, dtype=float)
+    # tau starts as t_values for all paths simultaneously
+    tau = np.tile(t_values, (n_paths, 1))  # (n_paths, n_t)
+    for col in range(max_edges):
+        edges = path_list[:, col]          # (n_paths,) — 0 means no edge
+        active = edges != 0               # (n_paths,) boolean mask
+        if not np.any(active):
+            break
+        edge_idx = np.where(active, edges - 1, 0)  # (n_paths,) safe indices
+        valid = tau < n_t - 1              # (n_paths, n_t)
+        parte_entera = np.floor(tau).astype(int)
+        mantisa = tau - parte_entera
+        parte_entera_c = np.clip(parte_entera, 0, n_t - 2)
+        # taus[edge_idx, parte_entera_c]: gather from taus for each path
+        tau0 = taus[edge_idx[:, None], parte_entera_c]   # (n_paths, n_t)
+        tau1 = taus[edge_idx[:, None], parte_entera_c + 1]
+        tau_new = (1 - mantisa) * tau0 + mantisa * tau1
+        tau_min = np.min(taus[edge_idx], axis=1, keepdims=True)  # (n_paths, 1)
+        tau_invalid = tau_min + tau
+        tau_next = np.where(valid, tau_new, tau_invalid)
+        # Only update active paths
+        tau = np.where(active[:, None], tau_next, tau)
+    return tau - t_values
+
+
+def A_delay(h, arc_delay, path_list, cap, fft, trapezoid_integration, slot_starts):
 	n_t = h.shape[1]
 	n_arcs = arc_delay.shape[0]
 	n_arc_path = np.sum(path_list != 0)
 	# calcular matriz de flujo por arco a partir de los delays por arco
 	taus = np.tile(np.arange(n_t),(n_arcs,1)) + arc_delay
 	D = calcula_D(taus)
-	af_matrix = make_af_operator(path_list, trapezoid_integration, arc_agg_matrix, D, n_arc_path, n_t, n_arcs)
+	af_matrix = make_af_operator(path_list, trapezoid_integration, D, n_arc_path, n_t, n_arcs, slot_starts)
 	# calcular flujos por arco a partir de los flujos por ruta y los delays por arco
+	#print("inicio de x_next = arc_flows_matrix(h, af_matrix)")
+	#profiler.disable()
 	x_next = arc_flows_matrix(h, af_matrix)
 	# calcular delays por arco a partir de los nuevos flujos por arco
 	arc_delay_next = calcula_arc_delay(x_next, cap, fft)
@@ -364,21 +379,6 @@ def calcula_trapezoid_integration(n_t):
 		integrate[i,:] = integrate_phi[:n_t]
 	return integrate
 
-def calcula_A_c_old(path_list, taus):
-	n_paths = path_list.shape[0]
-	n_t = taus.shape[1]
-	A = np.zeros((n_paths,n_t))
-	for p, path in enumerate(path_list):
-		edgelist = path[path != 0] - 1
-		for t in range(n_t):
-			tau = t
-			for edge in edgelist:
-				if tau < n_t:
-					tau = int(taus[edge, tau])
-				else:
-					tau = int(np.min(taus[edge])+tau)
-			A[p,t] = tau - t
-	return A
 
 def to_int32(m):
 	m = m.tocsr()
@@ -387,36 +387,46 @@ def to_int32(m):
 	return m
 
 
-def make_af_operator(path_list, trapezoid_integration, arc_agg_matrix,
-                     D, n_arc_path, n_t, n_arcs):
-    T  = sparse.csr_matrix(trapezoid_integration.T)  # (n_t, 2*n_t)
-    Tt = sparse.csr_matrix(trapezoid_integration)     # (2*n_t, n_t)
+def make_af_operator(path_list, trapezoid_integration,
+                     D, n_arc_path, n_t, n_arcs, slot_starts):
+    T_dense  = trapezoid_integration.T        # already numpy, (100, 200)
+    Tt_dense = trapezoid_integration          # (200, 100)
+    #T  = sparse.csr_matrix(trapezoid_integration.T)  # (n_t, 2*n_t)
+    #Tt = sparse.csr_matrix(trapezoid_integration)     # (2*n_t, n_t)
     # Precompute slot -> arc lookup
-    rows, cols = arc_agg_matrix.nonzero()
-    slots = cols // n_t
-    arcs  = rows // n_t
-    order = np.argsort(slots, kind='stable')
-    slots_s = slots[order]; arcs_s = arcs[order]
-    first_occ = np.concatenate([[True], slots_s[1:] != slots_s[:-1]])
-    slot_to_arc = arcs_s[first_occ]  # (n_arc_path,)
-    path_edgelists = [path[path != 0] - 1 for path in path_list]
+    slot_to_arc = path_list.flatten()
+    slot_to_arc = slot_to_arc[slot_to_arc != 0] - 1  # (n_arc_path,)
+    #path_edgelists = [path[path != 0] - 1 for path in path_list]
+    D_dense = np.array([d.toarray() for d in D])  # (76, 200, 200), ~24MB
     def matvec(h_flat):
-        # h_flat: (n_paths * 2*n_t,)
         h = h_flat.reshape(len(path_list), 2 * n_t)
-        result = np.zeros(n_arcs * n_t)
-        slot = 0
-        for path_idx, edgelist in enumerate(path_edgelists):
-            prev = h[path_idx].copy()          # (2*n_t,)
-            for edge in edgelist:
-                h_in  = prev
-                h_out = D[edge].dot(prev)
-                prev  = h_out
-                ar    = h_in - h_out           # (2*n_t,)
-                trap  = T.dot(ar)              # (n_t,)
-                arc_r = slot_to_arc[slot]
-                result[arc_r*n_t : (arc_r+1)*n_t] += trap
-                slot += 1
-        return result
+        result = np.zeros((n_arcs, n_t))
+        prev = h.copy()
+        for col in range(path_list.shape[1]):
+            edges = path_list[:, col]
+            active = edges != 0
+            if not np.any(active):
+                break
+            active_paths = np.where(active)[0]
+            active_edges = edges[active_paths] - 1
+            sort_order = np.argsort(active_edges)
+            sorted_paths = active_paths[sort_order]
+            sorted_edges = active_edges[sort_order]
+            unique_edges, counts = np.unique(sorted_edges, return_counts=True)
+            splits = np.concatenate([[0], np.cumsum(counts)])
+            # Save old values only for active paths, then update in place
+            prev_active_old = prev[active_paths].copy()   # (n_active, 200)
+            for i, edge_i in enumerate(unique_edges):
+                p_slice = sorted_paths[splits[i]:splits[i+1]]
+                prev[p_slice] = prev[p_slice] @ D_dense[edge_i].T
+            ar = prev_active_old - prev[active_paths]     # (n_active, 200)
+            trap = ar @ T_dense.T                         # (n_active, n_t)
+            # Faster scatter than np.add.at
+            for t in range(n_t):
+                result[:, t] += np.bincount(active_edges, 
+                                            weights=trap[:, t],
+                                            minlength=n_arcs)
+        return result.ravel()
     def rmatvec(x_flat):
         # x_flat: (n_arcs * n_t,)
         result = np.zeros(len(path_list) * 2 * n_t)
@@ -438,7 +448,8 @@ def make_af_operator(path_list, trapezoid_integration, arc_agg_matrix,
             for local_k, edge in enumerate(edgelist):
                 arc_r = slot_to_arc[slot + local_k]
                 x_arc = x_flat[arc_r*n_t : (arc_r+1)*n_t]
-                arc_xs.append(Tt.dot(x_arc))   # (2*n_t,) each
+                #arc_xs.append(Tt.dot(x_arc))   # (2*n_t,) each
+                arc_xs.append(Tt_dense @ x_arc)   # (2*n_t,) each
             # Pass 2: reverse accumulation
             # grad flows backward: after last edge, grad=0
             # at each step k (going backwards):
@@ -448,7 +459,8 @@ def make_af_operator(path_list, trapezoid_integration, arc_agg_matrix,
             back = np.zeros(2 * n_t)
             for local_k in range(len(edgelist) - 1, -1, -1):
                 edge = edgelist[local_k]
-                back = D[edge].T.dot(back)      # propagate gradient
+                #back = D[edge].T.dot(back)      # propagate gradient
+                back = D_dense[edge].T @ back      # propagate gradient
                 back -= arc_xs[local_k]         # out term: -Tt*x
                 back += arc_xs[local_k]         # in term cancels... 
             # Hmm — let me be more careful. Clean re-derivation:
@@ -465,14 +477,16 @@ def make_af_operator(path_list, trapezoid_integration, arc_agg_matrix,
             chain_T_vecs = []
             for local_k, edge in enumerate(edgelist):
                 v = arc_xs[local_k]                    # Tt x_{arc_k}: (2*n_t,)
-                vv = v - D[edge].T.dot(v)              # (I - D[e_k])^T v
+                #vv = v - D[edge].T.dot(v)              # (I - D[e_k])^T v
+                vv = v - D_dense[edge].T @ v              # (I - D[e_k])^T v
                 # Now apply C_k^T = D[e0]^T...D[e_{k-1}]^T to vv
                 for e in edgelist[:local_k]:
-                    vv = D[e].T.dot(vv)
+                    #vv = D[e].T.dot(vv)
+                    vv = D_dense[e].T @ vv
                 acc += vv
             result[path_idx * 2*n_t : (path_idx+1) * 2*n_t] = acc
             slot += len(edgelist)
         return result
     n_paths_ext = len(path_list) * 2 * n_t
     n_out = n_arcs * n_t
-    return LinearOperator((n_out, n_paths_ext), matvec=matvec, rmatvec=rmatvec)
+    return LinearOperator((n_out, n_paths_ext), matvec=matvec, rmatvec=rmatvec, dtype=np.float64)
